@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from .credentials import child_env, load_credentials
+from .formatting import markdown_to_telegram_html
 
 # Must run before the module-level settings below read the environment.
 load_credentials()
@@ -154,6 +155,18 @@ def _telegram(method: str, payload: dict, *, timeout: int = 35) -> dict:
     if not result.get("ok"):
         raise RuntimeError(f"Telegram {method} request failed")
     return result
+
+
+def send_markdown(text: str, chat_id: str | int | None = None) -> None:
+    """Send Markdown as Telegram HTML, falling back to plain text if it is rejected."""
+    target = chat_id or os.environ["TELEGRAM_CHAT_ID"]
+    try:
+        _telegram(
+            "sendMessage",
+            {"chat_id": target, "text": markdown_to_telegram_html(text)[:4096], "parse_mode": "HTML"},
+        )
+    except Exception:
+        send_telegram(text, chat_id)
 
 
 def send_telegram(text: str, chat_id: str | int | None = None) -> None:
@@ -415,7 +428,7 @@ def _execute_cli(
         output = output[:MAX_OUTPUT] + "\n… (saída truncada)"
     label = f"claude [{state['title']}]" if tool == "claude" and state.get("id") else tool
     try:
-        send_telegram(f"{label} {status}\n\n{output}", chat_id)
+        send_markdown(f"**{label}** {status}\n\n{output}", chat_id)
     except Exception:
         # Telegram outages must not terminate the polling service.
         return
