@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +15,10 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 MAX_OUTPUT = 3500
-COMMAND_TIMEOUT = 300
+COMMAND_TIMEOUT = int(os.getenv("TELEGRAM_COMMAND_TIMEOUT", "1800"))
+PERMISSION_TIMEOUT = int(os.getenv("TELEGRAM_PERMISSION_TIMEOUT", "300"))
+PERMISSION_TOKEN = secrets.token_hex(16)
+PERMISSION_TOOL = "mcp__tgperm__approve"
 SESSIONS_DIR = Path.home() / ".claude" / "projects"
 STATE_FILE = Path.home() / ".config" / "telegram-exec-notifier" / "state.json"
 TAIL_BYTES = 256_000
@@ -26,6 +31,110 @@ SYSTEM_HINT = (
 _state_lock = threading.Lock()
 _session_locks: dict[str, threading.Lock] = {}
 _last_listing: list[dict] = []
+_pending: dict[str, dict] = {}
+_pending_lock = threading.Lock()
+
+
+def _auto_dir() -> Path | None:
+    """Folder where Claude runs without asking, from TELEGRAM_CLAUDE_AUTO_DIR."""
+    raw = os.getenv("TELEGRAM_CLAUDE_AUTO_DIR", "").strip()
+    return Path(raw).expanduser().resolve() if raw else None
+
+
+def _inside_auto_dir(cwd: str) -> bool:
+    auto = _auto_dir()
+    if auto is None or not cwd:
+        return False
+    try:
+        return Path(cwd).resolve().is_relative_to(auto)
+    except (OSError, ValueError):
+        return False
+
+
+def _describe_tool(tool_name: str, tool_input: dict) -> str:
+    detail = (
+        tool_input.get("command")
+        or tool_input.get("file_path")
+        or tool_input.get("path")
+        or tool_input.get("url")
+        or json.dumps(tool_input, ensure_ascii=False)
+    )
+    return f"{tool_name}: {str(detail)[:500]}"
+
+
+def _ask_permission(tool_name: str, tool_input: dict, cwd: str) -> dict:
+    """Ask on Telegram and block until answered or timed out."""
+    if _inside_auto_dir(cwd):
+        return {"behavior": "allow"}
+    request_id = secrets.token_hex(6)
+    entry = {"event": threading.Event(), "allowed": False}
+    with _pending_lock:
+        _pending[request_id] = entry
+    text = f"🔐 Permissão solicitada\n{_describe_tool(tool_name, tool_input)}\n📁 {cwd}"
+    try:
+        sent = _telegram(
+            "sendMessage",
+            {
+                "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                "text": text[:4096],
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✅ Permitir", "callback_data": f"p:{request_id}:1"},
+                            {"text": "❌ Negar", "callback_data": f"p:{request_id}:0"},
+                        ]
+                    ]
+                },
+            },
+        )
+        message_id = sent["result"]["message_id"]
+        answered = entry["event"].wait(PERMISSION_TIMEOUT)
+    except Exception as exc:
+        with _pending_lock:
+            _pending.pop(request_id, None)
+        return {"behavior": "deny", "message": f"Could not ask on Telegram: {exc}"}
+    with _pending_lock:
+        _pending.pop(request_id, None)
+    if not answered:
+        _edit_message(message_id, f"⏱️ Expirou (negado)\n{text}")
+        return {"behavior": "deny", "message": "No answer on Telegram in time; denied."}
+    if entry["allowed"]:
+        return {"behavior": "allow"}
+    return {"behavior": "deny", "message": "The user denied this action on Telegram."}
+
+
+def _edit_message(message_id: int, text: str) -> None:
+    try:
+        _telegram(
+            "editMessageText",
+            {"chat_id": os.environ["TELEGRAM_CHAT_ID"], "message_id": message_id, "text": text[:4096]},
+        )
+    except Exception:
+        return
+
+
+def _handle_callback(callback: dict, allowed_chat: str) -> None:
+    message = callback.get("message") or {}
+    if (
+        str(message.get("chat", {}).get("id")) != allowed_chat
+        or str(callback.get("from", {}).get("id")) != allowed_chat
+    ):
+        return
+    parts = str(callback.get("data", "")).split(":")
+    if len(parts) != 3 or parts[0] != "p":
+        return
+    with _pending_lock:
+        entry = _pending.get(parts[1])
+    try:
+        _telegram("answerCallbackQuery", {"callback_query_id": callback["id"]})
+    except Exception:
+        pass
+    if entry is None:
+        return
+    entry["allowed"] = parts[2] == "1"
+    entry["event"].set()
+    verdict = "✅ Permitido" if entry["allowed"] else "❌ Negado"
+    _edit_message(message["message_id"], f"{verdict}\n{message.get('text', '')}")
 
 
 def _telegram(method: str, payload: dict, *, timeout: int = 35) -> dict:
@@ -51,6 +160,9 @@ def send_telegram(text: str, chat_id: str | int | None = None) -> None:
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
+        if self.path == "/permission":
+            self._permission()
+            return
         if self.path != "/notify":
             self.send_error(404)
             return
@@ -71,6 +183,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"sent\n")
+
+    def _permission(self) -> None:
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            if size > 64_000:
+                self.send_error(413)
+                return
+            payload = json.loads(self.rfile.read(size))
+            if not secrets.compare_digest(str(payload.get("token", "")), PERMISSION_TOKEN):
+                self.send_error(403)
+                return
+            tool_input = payload.get("input")
+            decision = _ask_permission(
+                str(payload.get("tool_name", "")),
+                tool_input if isinstance(tool_input, dict) else {},
+                str(payload.get("cwd", "")),
+            )
+        except Exception as exc:
+            decision = {"behavior": "deny", "message": str(exc)}
+        body = json.dumps(decision).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -181,10 +318,31 @@ def _handle_use(arg: str, chat_id: int) -> None:
 
 
 def _claude_command(prompt: str, state: dict) -> tuple[list[str], str | None]:
-    command = ["claude", "-p", prompt, "--add-dir", str(Path.home())]
+    port = os.getenv("TELEGRAM_NOTIFIER_PORT", "8765")
+    host = os.getenv("TELEGRAM_NOTIFIER_HOST", "127.0.0.1")
+    mcp_config = {
+        "mcpServers": {
+            "tgperm": {
+                "command": sys.executable,
+                "args": ["-m", "telegram_exec_notifier.permission_mcp"],
+                "env": {
+                    "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                    "TELEGRAM_NOTIFIER_URL": f"http://{host}:{port}",
+                    "TELEGRAM_PERMISSION_TOKEN": PERMISSION_TOKEN,
+                    "TELEGRAM_PERMISSION_TIMEOUT": str(PERMISSION_TIMEOUT),
+                },
+            }
+        }
+    }
+    command = [
+        "claude", "-p", prompt, "--add-dir", str(Path.home()),
+        "--mcp-config", json.dumps(mcp_config),
+        "--permission-prompt-tool", PERMISSION_TOOL,
+    ]
     if state.get("id"):
         return command + ["--resume", state["id"]], state.get("cwd")
-    return command + ["--append-system-prompt", SYSTEM_HINT], None
+    auto = _auto_dir()
+    return command + ["--append-system-prompt", SYSTEM_HINT], str(auto) if auto else None
 
 
 def _run_cli(tool: str, prompt: str, chat_id: int) -> None:
@@ -227,6 +385,7 @@ def _execute_cli(
         proc = subprocess.run(
             commands[tool],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=COMMAND_TIMEOUT,
             cwd=claude_cwd if tool == "claude" else (Path.home() if tool == "kiro" else None),
@@ -261,6 +420,7 @@ HELP_TEXT = (
     "/sessions — lista sessões recentes do Claude\n"
     "/use <n> — continua a sessão n; /use new (ou /new) começa do zero\n"
     "/codex <prompt> e /kiro <prompt> — outros agentes\n"
+    "O Claude pede permissão aqui no Telegram (botões Permitir/Negar).\n"
     "O CLI roda neste computador."
 )
 
@@ -273,6 +433,9 @@ def _poll_commands() -> None:
             updates = _telegram("getUpdates", {"offset": offset, "timeout": 25}, timeout=35)
             for update in updates.get("result", []):
                 offset = max(offset, update["update_id"] + 1)
+                if "callback_query" in update:
+                    _handle_callback(update["callback_query"], allowed_chat)
+                    continue
                 message = update.get("message") or update.get("edited_message") or {}
                 chat = message.get("chat", {})
                 sender = message.get("from", {})
