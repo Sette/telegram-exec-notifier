@@ -71,7 +71,23 @@ By default each message starts a new Claude conversation that knows where other 
 
 The active session is saved in `~/.config/telegram-exec-notifier/state.json` and survives service restarts. Sessions started by the bot itself are not listed. If the same session is open in a terminal, the bot's replies continue it separately from what you type there.
 
-The bot confirms when the task starts and sends the final output when it finishes. Each run has a five-minute limit, and long responses are truncated to fit Telegram. Send `/help` to see the available commands. Messages from other chats are ignored.
+The bot confirms when the task starts and sends the final output when it finishes. Each run has a time limit (30 minutes by default), and long responses are truncated to fit Telegram. Send `/help` to see the available commands. Messages from other chats are ignored.
+
+### Approve Claude permissions from Telegram
+
+When Claude wants to run a command or edit a file that needs permission, the bot sends a message with the tool and its command or path, plus **Permitir** / **Negar** buttons. Claude continues or adapts according to your answer. If you do not answer within `TELEGRAM_PERMISSION_TIMEOUT` seconds (default 300), the request is denied. Only the authorized chat can answer. `/codex` and `/kiro` do not use this flow.
+
+Optional settings in `~/.config/telegram-exec-notifier/environment`:
+
+```sh
+# Claude runs without asking when its working directory is inside this folder.
+# New conversations also start in this folder. Everything else still asks.
+TELEGRAM_CLAUDE_AUTO_DIR=/home/you/sandbox
+TELEGRAM_PERMISSION_TIMEOUT=300   # seconds to wait for a Telegram answer
+TELEGRAM_COMMAND_TIMEOUT=1800     # seconds before a run is stopped
+```
+
+The folder check uses the session's working directory, so a shell command inside that folder can still reach outside it (for example `cd ..`). Use a dedicated folder.
 
 ## 4. Send a notification
 
