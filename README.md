@@ -20,7 +20,7 @@ The project also provides a `notify-telegram` command for shell scripts, pipelin
 1. In Telegram, message [@BotFather](https://t.me/BotFather), run `/newbot`, and save the token it gives you.
 2. Open your new bot and send it `/start`.
 3. Find your numeric chat ID and configure it as the authorized recipient. Only messages from this chat are processed.
-4. Set the variables in `~/.config/telegram-exec-notifier/environment`. Keep this file private and do not commit it. [`.env.example`](.env.example) lists every supported variable, required and optional, so you can copy it as a starting point:
+4. Create the plain file `~/.config/telegram-exec-notifier/environment` with the variables below ([`.env.example`](.env.example) lists every supported one). You encrypt it in step 3, so it does not stay on disk in plain text:
 
 ```sh
 TELEGRAM_BOT_TOKEN=your-bot-token
@@ -39,11 +39,14 @@ pip install -e .
 
 ## 3. Start the user service
 
-Create the environment file above, then run this command from the project directory:
+Encrypt the environment file, then start the service. Both commands run from the project directory:
 
 ```sh
+./encrypt-credentials.sh
 ./start-service.sh
 ```
+
+`encrypt-credentials.sh` uses `systemd-creds` (user scope, host key plus TPM2) to write `environment.cred`, checks that it decrypts to the same content, and then securely deletes the plain file. The service loads the credential with `LoadCredentialEncrypted=`, so the token is no longer stored in plain text on disk and is decrypted only on this computer. It needs a TPM2 (`systemd-analyze has-tpm2`) and systemd 256 or newer. To change a value, recreate the plain file and run `./encrypt-credentials.sh` again, then restart the service.
 
 The script installs the user service unit (filling in this project's path), sets the environment file permissions to `600`, enables the service at startup, and restarts it.
 
@@ -115,4 +118,6 @@ The same call works in an existing async function with `await`.
 
 - The service processes commands only from the configured Telegram chat ID.
 - Its local endpoint listens on `127.0.0.1`; do not expose the port to the network.
-- Keep the environment file private with mode `600`, and never commit your bot token.
+- The bot token is stored encrypted (`environment.cred`), and the agent CLIs started by the bot do not inherit it in their environment.
+- While the service runs, systemd keeps the decrypted credential in `/run/user/<uid>/credentials/`, readable by your user. An agent running as your user that knows this path could still read it, so encryption protects the token at rest (disk theft, backups, other users), not from a process running as you. Revoke the token with BotFather `/revoke` if you suspect a leak.
+- Never commit your bot token.
