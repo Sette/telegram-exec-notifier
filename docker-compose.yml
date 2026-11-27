@@ -1,0 +1,22 @@
+# Runs the bot in a container. The agent CLIs and your files live on the host, so the
+# host home directory is mounted at the same path and the container runs as your user.
+#
+#   HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d
+#
+# Put TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (see .env.example), not in this file.
+services:
+  telegram-exec-notifier:
+    image: ghcr.io/sette/telegram-exec-notifier:latest
+    # build: .   # uncomment to build from source instead
+    restart: unless-stopped
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    env_file: .env
+    environment:
+      HOME: ${HOME}
+      PATH: ${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin
+    volumes:
+      - ${HOME}:${HOME}
+    ports:
+      - "127.0.0.1:8765:8765" # never publish this port beyond localhost
+    security_opt:
+      - no-new-privileges:true
