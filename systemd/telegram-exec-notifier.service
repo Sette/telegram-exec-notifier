@@ -4,17 +4,17 @@ After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/brunos/git/telegram-exec-notifier
+WorkingDirectory=@PROJECT_DIR@
 EnvironmentFile=%h/.config/telegram-exec-notifier/environment
-Environment=PYTHONPATH=/home/brunos/git/telegram-exec-notifier/src
-Environment=PATH=/home/brunos/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=@PROJECT_DIR@/src
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/python3 -m telegram_exec_notifier.server
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/home/brunos
+ReadWritePaths=%h
 
 [Install]
 WantedBy=default.target
