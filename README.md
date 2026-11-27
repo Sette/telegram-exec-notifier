@@ -74,6 +74,8 @@ By default each message starts a new Claude conversation that knows where other 
 
 The active session is saved in `~/.config/telegram-exec-notifier/state.json` and survives service restarts. Sessions started by the bot itself are not listed. If the same session is open in a terminal, the bot's replies continue it separately from what you type there.
 
+Claude replies are streamed: each message arrives as soon as it is written, a "still working" note appears every `TELEGRAM_HEARTBEAT` seconds while it runs, and a final message reports completion and elapsed time. Your next message is accepted as soon as the final answer is out, even if background tasks are still running.
+
 The bot confirms when the task starts and sends the final output when it finishes. Each run has a time limit (30 minutes by default), and long responses are truncated to fit Telegram. Send `/help` to see the available commands. Messages from other chats are ignored.
 
 ### Approve Claude permissions from Telegram
@@ -88,6 +90,8 @@ Optional settings in `~/.config/telegram-exec-notifier/environment`:
 TELEGRAM_CLAUDE_AUTO_DIR=/home/you/sandbox
 TELEGRAM_PERMISSION_TIMEOUT=300   # seconds to wait for a Telegram answer
 TELEGRAM_COMMAND_TIMEOUT=1800     # seconds before a run is stopped
+TELEGRAM_HEARTBEAT=120            # seconds between "still working" messages
+TELEGRAM_BACKGROUND_TIMEOUT=86400 # seconds a run may continue after its final answer
 ```
 
 The folder check uses the session's working directory, so a shell command inside that folder can still reach outside it (for example `cd ..`). Use a dedicated folder.
