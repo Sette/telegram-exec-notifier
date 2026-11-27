@@ -4,11 +4,11 @@ set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 unit_name="telegram-exec-notifier.service"
 unit_dir="$HOME/.config/systemd/user"
-environment_file="$HOME/.config/telegram-exec-notifier/environment"
+environment_file="$HOME/.config/telegram-exec-notifier/environment.cred"
 
 if [[ ! -f "$environment_file" ]]; then
-  printf 'Arquivo de configuração não encontrado: %s\n' "$environment_file" >&2
-  printf 'Crie-o com TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID antes de iniciar o serviço.\n' >&2
+  printf 'Credencial cifrada não encontrada: %s\n' "$environment_file" >&2
+  printf 'Crie ~/.config/telegram-exec-notifier/environment com TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID e rode ./encrypt-credentials.sh.\n' >&2
   exit 1
 fi
 
