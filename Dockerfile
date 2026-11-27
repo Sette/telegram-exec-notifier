@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 LABEL org.opencontainers.image.source="https://github.com/Sette/telegram-exec-notifier" \
       org.opencontainers.image.description="Telegram bot that runs Claude, Codex and Kiro and relays their output"
