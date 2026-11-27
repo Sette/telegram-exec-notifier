@@ -14,6 +14,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from .credentials import child_env, load_credentials
+
+# Must run before the module-level settings below read the environment.
+load_credentials()
+
 MAX_OUTPUT = 3500
 COMMAND_TIMEOUT = int(os.getenv("TELEGRAM_COMMAND_TIMEOUT", "1800"))
 PERMISSION_TIMEOUT = int(os.getenv("TELEGRAM_PERMISSION_TIMEOUT", "300"))
@@ -385,6 +390,7 @@ def _execute_cli(
         proc = subprocess.run(
             commands[tool],
             capture_output=True,
+            env=child_env(),
             stdin=subprocess.DEVNULL,
             text=True,
             timeout=COMMAND_TIMEOUT,
