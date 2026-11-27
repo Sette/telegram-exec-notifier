@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import queue
 import secrets
 import shutil
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +24,9 @@ from .formatting import markdown_to_telegram_html
 load_credentials()
 
 MAX_OUTPUT = 3500
+HEARTBEAT = int(os.getenv("TELEGRAM_HEARTBEAT", "120"))
+BACKGROUND_TIMEOUT = int(os.getenv("TELEGRAM_BACKGROUND_TIMEOUT", "86400"))
+log = logging.getLogger("telegram_exec_notifier")
 COMMAND_TIMEOUT = int(os.getenv("TELEGRAM_COMMAND_TIMEOUT", "1800"))
 PERMISSION_TIMEOUT = int(os.getenv("TELEGRAM_PERMISSION_TIMEOUT", "300"))
 PERMISSION_TOKEN = secrets.token_hex(16)
@@ -354,6 +360,7 @@ def _claude_command(prompt: str, state: dict) -> tuple[list[str], str | None]:
     }
     command = [
         "claude", "-p", prompt, "--add-dir", str(Path.home()),
+        "--output-format", "stream-json", "--verbose",
         "--mcp-config", json.dumps(mcp_config),
         "--permission-prompt-tool", PERMISSION_TOOL,
     ]
@@ -368,14 +375,127 @@ def _run_cli(tool: str, prompt: str, chat_id: int) -> None:
         state = _load_state()
     claude_command, claude_cwd = _claude_command(prompt, state)
     session_lock = _session_locks.setdefault(state.get("id") or "", threading.Lock())
-    if tool == "claude" and state.get("id") and not session_lock.acquire(blocking=False):
+    holds_lock = tool == "claude" and bool(state.get("id"))
+    if holds_lock and not session_lock.acquire(blocking=False):
         send_telegram("⏳ A sessão ainda está respondendo à mensagem anterior. Aguarde.", chat_id)
         return
-    try:
-        _execute_cli(tool, prompt, chat_id, claude_command, claude_cwd, state)
-    finally:
-        if tool == "claude" and state.get("id"):
+    released = threading.Event()
+
+    def release() -> None:
+        """Free the session once the first answer is out, even if background tasks linger."""
+        if holds_lock and not released.is_set():
+            released.set()
             session_lock.release()
+
+    try:
+        if tool == "claude":
+            _stream_claude(claude_command, claude_cwd, chat_id, state, release)
+        else:
+            _execute_cli(tool, prompt, chat_id, claude_command, claude_cwd, state)
+    finally:
+        release()
+
+
+def _reader(stream, events: "queue.Queue") -> None:
+    for line in stream:
+        events.put(line)
+    events.put(None)
+
+
+def _stream_claude(
+    command: list[str], cwd: str | None, chat_id: int, state: dict, release
+) -> None:
+    """Run `claude -p` and relay each assistant message as it appears, with heartbeats."""
+    label = f"claude [{state['title']}]" if state.get("id") else "claude"
+    started = time.monotonic()
+    log.info("start %s cwd=%s", label, cwd)
+    stderr_file = tempfile.TemporaryFile(mode="w+", errors="replace")
+    try:
+        proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=stderr_file, stdin=subprocess.DEVNULL,
+            env=child_env(), text=True, cwd=cwd,
+        )
+    except Exception as exc:
+        send_telegram(f"❌ falha ao iniciar {label}: {exc}", chat_id)
+        log.error("spawn failed: %s", exc)
+        return
+    events: queue.Queue = queue.Queue()
+    threading.Thread(target=_reader, args=(proc.stdout, events), daemon=True).start()
+    last_text = ""
+    last_tool = ""
+    last_ping = started
+    answered = False
+    status = ""
+    while True:
+        now = time.monotonic()
+        limit = BACKGROUND_TIMEOUT if answered else COMMAND_TIMEOUT
+        if now - started > limit:
+            proc.kill()
+            status = f"⏱️ tempo limite ({limit}s)"
+            break
+        try:
+            line = events.get(timeout=min(HEARTBEAT, 15))
+        except queue.Empty:
+            if not answered and time.monotonic() - last_ping >= HEARTBEAT:
+                minutes = int((time.monotonic() - started) // 60)
+                suffix = f" — {last_tool}" if last_tool else ""
+                _safe_send(f"⏳ ainda trabalhando ({minutes} min){suffix}", chat_id)
+                last_ping = time.monotonic()
+            continue
+        if line is None:
+            break
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        kind = event.get("type")
+        if kind == "assistant":
+            for block in event.get("message", {}).get("content", []):
+                if block.get("type") == "tool_use":
+                    last_tool = f"executando {block.get('name', 'ferramenta')}"
+                elif block.get("type") == "text" and block.get("text", "").strip():
+                    last_text = block["text"].strip()
+                    _safe_markdown(last_text, chat_id)
+                    last_ping = time.monotonic()
+        elif kind == "result":
+            final = str(event.get("result") or "").strip()
+            failed = bool(event.get("is_error"))
+            if final and final != last_text:
+                _safe_markdown(final, chat_id)
+            minutes = (time.monotonic() - started) / 60
+            _safe_send(f"{'❌ erro' if failed else '✅ concluído'} ({minutes:.1f} min)", chat_id)
+            answered = True
+            last_text = final or last_text
+            release()
+    try:
+        code = proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        code = proc.wait()
+    stderr_file.seek(0)
+    err = stderr_file.read().strip()
+    stderr_file.close()
+    log.info("end %s code=%s secs=%.0f answered=%s", label, code, time.monotonic() - started, answered)
+    if status:
+        _safe_send(f"{status}\n{label}", chat_id)
+    elif not answered:
+        _safe_send(f"❌ {label} terminou sem resposta (código {code})\n{err[-MAX_OUTPUT:]}", chat_id)
+
+
+def _safe_send(text: str, chat_id: int) -> None:
+    try:
+        send_telegram(text, chat_id)
+    except Exception:
+        log.warning("telegram send failed")
+
+
+def _safe_markdown(text: str, chat_id: int) -> None:
+    if len(text) > MAX_OUTPUT:
+        text = text[:MAX_OUTPUT] + "\n… (saída truncada)"
+    try:
+        send_markdown(text, chat_id)
+    except Exception:
+        log.warning("telegram send failed")
 
 
 def _execute_cli(
@@ -511,6 +631,7 @@ def _import_personal_skills_for_kiro() -> None:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     _import_personal_skills_for_kiro()
     threading.Thread(target=_poll_commands, daemon=True).start()
     address = os.getenv("TELEGRAM_NOTIFIER_HOST", "127.0.0.1")
