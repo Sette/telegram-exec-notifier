@@ -45,9 +45,9 @@ Create the environment file above, then run this command from the project direct
 ./start-service.sh
 ```
 
-The script installs the user service unit, sets the environment file permissions to `600`, enables the service at startup, and restarts it.
+The script installs the user service unit (filling in this project's path), sets the environment file permissions to `600`, enables the service at startup, and restarts it.
 
-The service expects to find `claude`, `codex`, and `kiro-cli` in `/home/brunos/.local/bin` or `/usr/local/bin`. Adjust `PATH` in the service unit if your CLI binaries are elsewhere. Claude and Codex receive the home directory as an additional working directory; Kiro runs with the home directory as its workspace and has read and write tools enabled. This lets the agents work with files across your home directory while the service unit keeps the rest of the system protected from writes. On startup, the service also copies personal skills from `~/.codex/skills` and `~/.claude/skills` to `~/.kiro/skills`, preserving any skills already present in Kiro.
+The service expects to find `claude`, `codex`, and `kiro-cli` in `$HOME/.local/bin` or `/usr/local/bin`. Adjust `PATH` in the service unit if your CLI binaries are elsewhere. Claude and Codex receive the home directory as an additional working directory; Kiro runs with the home directory as its workspace and has read and write tools enabled. This lets the agents work with files across your home directory while the service unit keeps the rest of the system protected from writes. On startup, the service also copies personal skills from `~/.codex/skills` and `~/.claude/skills` to `~/.kiro/skills`, preserving any skills already present in Kiro.
 
 ## Send prompts from Telegram
 
