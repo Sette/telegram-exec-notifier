@@ -1,5 +1,8 @@
 # Telegram Execution Notifier
 
+[![CI](https://github.com/Sette/telegram-exec-notifier/actions/workflows/ci.yml/badge.svg)](https://github.com/Sette/telegram-exec-notifier/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/telegram-exec-notifier)](https://pypi.org/project/telegram-exec-notifier/)
+
 Run command-line AI agents from Telegram and get their results back on your phone. Telegram Execution Notifier connects a Telegram bot to Claude Code, Codex CLI, and Kiro CLI running on your computer, so you can delegate coding, troubleshooting, documentation, and other tasks without staying at your terminal.
 
 Send a prompt to your bot and choose which agent should handle it. The request is forwarded to the selected CLI on your computer, and the bot sends the final output to your authorized Telegram chat. This is especially useful when your agents can access local project files and skills: you can trigger workflows remotely and let an agent use the context and capabilities already configured in your CLI environment.
@@ -36,6 +39,14 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -e .
 ```
+
+### Install from PyPI
+
+```sh
+pip install telegram-exec-notifier
+```
+
+This provides the `notify-telegram` command and `telegram-exec-notifier` (the bot service). The systemd unit and the scripts below are in this repository.
 
 ## 3. Start the user service
 
@@ -96,6 +107,17 @@ TELEGRAM_BACKGROUND_TIMEOUT=86400 # seconds a run may continue after its final a
 
 The folder check uses the session's working directory, so a shell command inside that folder can still reach outside it (for example `cd ..`). Use a dedicated folder.
 
+## Run with Docker
+
+As an alternative to systemd, run the bot as a container. The image only contains the service; the agent CLIs (`claude`, `codex`, `kiro-cli`) stay on your computer, so the compose file mounts your home directory at the same path and runs as your user.
+
+```sh
+cp .env.example .env          # set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d
+```
+
+The image is published at `ghcr.io/sette/telegram-exec-notifier`. The port is published on `127.0.0.1` only; do not expose it to the network. Credentials come from `.env` through the environment, so the systemd encrypted-credential flow does not apply; the bot token is still hidden from the agents it starts. The CLI binaries must run inside the image (a glibc Linux image); if yours do not, build a custom image from this one.
+
 ## 4. Send a notification
 
 ```sh
@@ -117,6 +139,21 @@ asyncio.run(
 ```
 
 The same call works in an existing async function with `await`.
+
+## Development and releases
+
+```sh
+uv run --group dev ruff check .
+uv run --group dev pytest
+```
+
+CI runs lint, tests on Python 3.10 to 3.13, a package build check and a Docker build on every pull request. Commits follow `type(scope): emoji description`. [release-please](https://github.com/googleapis/release-please) reads them on `main` and keeps a release pull request up to date; merging it creates the tag and the GitHub release, which publishes the package to PyPI and the image to GHCR.
+
+One-time repository setup:
+
+1. Add the `RELEASE_PLEASE_TOKEN` secret (a personal access token with contents and pull request write access) so the release it creates can trigger the publish workflows.
+2. On PyPI, add a [trusted publisher](https://docs.pypi.org/trusted-publishers/) for `telegram-exec-notifier`: owner `Sette`, repository `telegram-exec-notifier`, workflow `python-publish.yml`, environment `pypi`. Create the `pypi` environment in the repository settings.
+3. Do not edit `.release-please-manifest.json`, the version in `pyproject.toml` or the changelog by hand; the release PR does it.
 
 ## Security notes
 
