@@ -10,8 +10,8 @@ import secrets
 import shutil
 import subprocess
 import sys
-import threading
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -338,7 +338,10 @@ def _handle_use(arg: str, chat_id: int) -> None:
     chosen = _last_listing[int(arg) - 1]
     with _state_lock:
         _save_state({"id": chosen["id"], "cwd": chosen["cwd"], "title": chosen["title"]})
-    send_telegram(f"Sessão ativa: [{Path(chosen['cwd']).name}] {chosen['title']}\nMensagens sem / vão para ela.", chat_id)
+    send_telegram(
+        f"Sessão ativa: [{Path(chosen['cwd']).name}] {chosen['title']}\nMensagens sem / vão para ela.",
+        chat_id,
+    )
 
 
 def _claude_command(prompt: str, state: dict) -> tuple[list[str], str | None]:
@@ -396,7 +399,7 @@ def _run_cli(tool: str, prompt: str, chat_id: int) -> None:
         release()
 
 
-def _reader(stream, events: "queue.Queue") -> None:
+def _reader(stream, events: queue.Queue) -> None:
     for line in stream:
         events.put(line)
     events.put(None)
