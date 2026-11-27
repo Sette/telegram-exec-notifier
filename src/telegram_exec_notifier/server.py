@@ -14,6 +14,18 @@ from urllib.request import Request, urlopen
 
 MAX_OUTPUT = 3500
 COMMAND_TIMEOUT = 300
+SESSIONS_DIR = Path.home() / ".claude" / "projects"
+STATE_FILE = Path.home() / ".config" / "telegram-exec-notifier" / "state.json"
+TAIL_BYTES = 256_000
+SYSTEM_HINT = (
+    "Você responde via Telegram. Transcrições de outras sessões do Claude Code "
+    f"estão em {SESSIONS_DIR}/<projeto>/<session-id>.jsonl; leia-as quando o usuário "
+    "perguntar sobre experimentos ou trabalhos de outras sessões. Seja conciso."
+)
+
+_state_lock = threading.Lock()
+_session_locks: dict[str, threading.Lock] = {}
+_last_listing: list[dict] = []
 
 
 def _telegram(method: str, payload: dict, *, timeout: int = 35) -> dict:
@@ -64,9 +76,137 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+def _load_state() -> dict:
+    try:
+        data = json.loads(STATE_FILE.read_text())
+        return {"id": data.get("id"), "cwd": data.get("cwd"), "title": data.get("title")}
+    except (OSError, ValueError):
+        return {"id": None, "cwd": None, "title": None}
+
+
+def _save_state(state: dict) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state))
+
+
+def _scan_session(path: Path) -> dict:
+    """Extract cwd and title from the head and tail of a session transcript."""
+    cwd = title = first_prompt = entrypoint = None
+    with path.open("rb") as handle:
+        head = handle.read(TAIL_BYTES).decode(errors="replace")
+        handle.seek(0, os.SEEK_END)
+        size = handle.tell()
+        tail = ""
+        if size > TAIL_BYTES:
+            handle.seek(size - TAIL_BYTES)
+            tail = handle.read().decode(errors="replace")
+    for line in head.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        cwd = cwd or entry.get("cwd")
+        entrypoint = entrypoint or entry.get("entrypoint")
+        if first_prompt is None and entry.get("type") == "user":
+            content = entry.get("message", {}).get("content")
+            if isinstance(content, str) and not content.startswith("<"):
+                first_prompt = content
+        if entry.get("type") == "ai-title":
+            title = entry.get("aiTitle") or title
+        if cwd and title:
+            break
+    for line in reversed((tail or head).splitlines()):
+        if '"ai-title"' in line:
+            try:
+                title = json.loads(line).get("aiTitle") or title
+            except ValueError:
+                continue
+            break
+    title = title or (first_prompt or "(sem título)")
+    return {"cwd": cwd, "entrypoint": entrypoint, "title": " ".join(title.split())[:70]}
+
+
+def _list_sessions(limit: int = 10) -> list[dict]:
+    """Return the most recent Claude Code sessions, newest first."""
+    files = sorted(SESSIONS_DIR.glob("*/*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    sessions = []
+    for path in files:
+        if len(sessions) >= limit:
+            break
+        try:
+            info = _scan_session(path)
+        except OSError:
+            continue
+        # Skip runs started by this bot itself (headless `claude -p`).
+        if not info["cwd"] or info["entrypoint"] == "sdk-cli":
+            continue
+        sessions.append({"id": path.stem, "mtime": path.stat().st_mtime, **info})
+    return sessions
+
+
+def _ago(timestamp: float) -> str:
+    seconds = int(time.time() - timestamp)
+    if seconds < 3600:
+        return f"há {max(seconds // 60, 1)} min"
+    if seconds < 86400:
+        return f"há {seconds // 3600} h"
+    return f"há {seconds // 86400} d"
+
+
+def _format_sessions(sessions: list[dict], active_id: str | None) -> str:
+    if not sessions:
+        return "Nenhuma sessão encontrada."
+    lines = []
+    for number, item in enumerate(sessions, 1):
+        mark = "▶ " if item["id"] == active_id else ""
+        lines.append(f"{number}. {mark}[{Path(item['cwd']).name}] {item['title']} — {_ago(item['mtime'])}")
+    return "Sessões recentes:\n" + "\n".join(lines) + "\n\nUse /use <número> para continuar uma delas, ou /use new."
+
+
+def _handle_use(arg: str, chat_id: int) -> None:
+    global _last_listing
+    arg = arg.strip().lower()
+    if arg in {"new", "nova", "0"}:
+        with _state_lock:
+            _save_state({"id": None, "cwd": None, "title": None})
+        send_telegram("Sessão limpa: as próximas mensagens iniciam uma conversa nova.", chat_id)
+        return
+    if not arg.isdigit() or not _last_listing or not 1 <= int(arg) <= len(_last_listing):
+        send_telegram("Envie /sessions e depois /use <número> (ou /use new).", chat_id)
+        return
+    chosen = _last_listing[int(arg) - 1]
+    with _state_lock:
+        _save_state({"id": chosen["id"], "cwd": chosen["cwd"], "title": chosen["title"]})
+    send_telegram(f"Sessão ativa: [{Path(chosen['cwd']).name}] {chosen['title']}\nMensagens sem / vão para ela.", chat_id)
+
+
+def _claude_command(prompt: str, state: dict) -> tuple[list[str], str | None]:
+    command = ["claude", "-p", prompt, "--add-dir", str(Path.home())]
+    if state.get("id"):
+        return command + ["--resume", state["id"]], state.get("cwd")
+    return command + ["--append-system-prompt", SYSTEM_HINT], None
+
+
 def _run_cli(tool: str, prompt: str, chat_id: int) -> None:
+    with _state_lock:
+        state = _load_state()
+    claude_command, claude_cwd = _claude_command(prompt, state)
+    session_lock = _session_locks.setdefault(state.get("id") or "", threading.Lock())
+    if tool == "claude" and state.get("id") and not session_lock.acquire(blocking=False):
+        send_telegram("⏳ A sessão ainda está respondendo à mensagem anterior. Aguarde.", chat_id)
+        return
+    try:
+        _execute_cli(tool, prompt, chat_id, claude_command, claude_cwd, state)
+    finally:
+        if tool == "claude" and state.get("id"):
+            session_lock.release()
+
+
+def _execute_cli(
+    tool: str, prompt: str, chat_id: int, claude_command: list[str], claude_cwd: str | None, state: dict
+) -> None:
     commands = {
-        "claude": ["claude", "-p", prompt, "--add-dir", str(Path.home())],
+        "claude": claude_command,
         "codex": [
             "codex",
             "--ask-for-approval",
@@ -89,7 +229,7 @@ def _run_cli(tool: str, prompt: str, chat_id: int) -> None:
             capture_output=True,
             text=True,
             timeout=COMMAND_TIMEOUT,
-            cwd=Path.home() if tool == "kiro" else None,
+            cwd=claude_cwd if tool == "claude" else (Path.home() if tool == "kiro" else None),
         )
         output = (proc.stdout + ("\n" + proc.stderr if proc.stderr else "")).strip()
         output = output or "(sem resposta do CLI)"
@@ -108,11 +248,21 @@ def _run_cli(tool: str, prompt: str, chat_id: int) -> None:
         status = "❌ falha ao iniciar"
     if len(output) > MAX_OUTPUT:
         output = output[:MAX_OUTPUT] + "\n… (saída truncada)"
+    label = f"claude [{state['title']}]" if tool == "claude" and state.get("id") else tool
     try:
-        send_telegram(f"{tool} {status}\n\n{output}", chat_id)
+        send_telegram(f"{label} {status}\n\n{output}", chat_id)
     except Exception:
         # Telegram outages must not terminate the polling service.
         return
+
+
+HELP_TEXT = (
+    "Mensagens sem / vão para o Claude.\n"
+    "/sessions — lista sessões recentes do Claude\n"
+    "/use <n> — continua a sessão n; /use new (ou /new) começa do zero\n"
+    "/codex <prompt> e /kiro <prompt> — outros agentes\n"
+    "O CLI roda neste computador."
+)
 
 
 def _poll_commands() -> None:
@@ -135,16 +285,27 @@ def _poll_commands() -> None:
                 text = message.get("text", "").strip()
                 if not text:
                     continue
-                command, _, prompt = text.partition(" ")
-                tool = command.split("@", 1)[0].lstrip("/").lower()
-                prompt = prompt.strip()
+                if text.startswith("/"):
+                    command, _, prompt = text.partition(" ")
+                    tool = command.split("@", 1)[0].lstrip("/").lower()
+                    prompt = prompt.strip()
+                else:
+                    tool, prompt = "claude", text
                 if tool in {"start", "help"}:
-                    send_telegram("Envie /claude <prompt>, /codex <prompt> ou /kiro <prompt>. O CLI roda neste computador, na pasta configurada no serviço.", chat["id"])
+                    send_telegram(HELP_TEXT, chat["id"])
+                elif tool == "sessions":
+                    global _last_listing
+                    _last_listing = _list_sessions()
+                    with _state_lock:
+                        active = _load_state().get("id")
+                    send_telegram(_format_sessions(_last_listing, active), chat["id"])
+                elif tool in {"use", "new"}:
+                    _handle_use(prompt if tool == "use" else "new", chat["id"])
                 elif tool in {"claude", "codex", "kiro"} and prompt:
                     send_telegram(f"⏳ Iniciando {tool}…", chat["id"])
                     threading.Thread(target=_run_cli, args=(tool, prompt, chat["id"]), daemon=True).start()
                 else:
-                    send_telegram("Comando inválido. Use /claude <prompt>, /codex <prompt> ou /kiro <prompt>.", chat["id"])
+                    send_telegram("Comando inválido. Envie /help para ver as opções.", chat["id"])
         except Exception:
             time.sleep(3)
 
