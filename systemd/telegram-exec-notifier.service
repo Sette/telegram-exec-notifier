@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=@PROJECT_DIR@
-EnvironmentFile=%h/.config/telegram-exec-notifier/environment
+LoadCredentialEncrypted=environment:%h/.config/telegram-exec-notifier/environment.cred
 Environment=PYTHONPATH=@PROJECT_DIR@/src
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/python3 -m telegram_exec_notifier.server
