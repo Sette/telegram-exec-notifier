@@ -12,7 +12,9 @@ if [[ ! -f "$environment_file" ]]; then
   exit 1
 fi
 
-install -D -m 0644 "$project_dir/systemd/$unit_name" "$unit_dir/$unit_name"
+mkdir -p "$unit_dir"
+sed "s|@PROJECT_DIR@|$project_dir|g" "$project_dir/systemd/$unit_name" > "$unit_dir/$unit_name"
+chmod 0644 "$unit_dir/$unit_name"
 chmod 0600 "$environment_file"
 
 systemctl --user daemon-reload
