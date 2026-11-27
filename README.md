@@ -20,7 +20,7 @@ The project also provides a `notify-telegram` command for shell scripts, pipelin
 1. In Telegram, message [@BotFather](https://t.me/BotFather), run `/newbot`, and save the token it gives you.
 2. Open your new bot and send it `/start`.
 3. Find your numeric chat ID and configure it as the authorized recipient. Only messages from this chat are processed.
-4. Set the variables in `~/.config/telegram-exec-notifier/environment`. Keep this file private and do not commit it:
+4. Set the variables in `~/.config/telegram-exec-notifier/environment`. Keep this file private and do not commit it. [`.env.example`](.env.example) lists every supported variable, required and optional, so you can copy it as a starting point:
 
 ```sh
 TELEGRAM_BOT_TOKEN=your-bot-token
