@@ -51,13 +51,25 @@ The service expects to find `claude`, `codex`, and `kiro-cli` in `/home/brunos/.
 
 ## Send prompts from Telegram
 
-Send a direct message to the bot from the authorized chat. Prefix the prompt with the agent you want to use:
+Send a direct message to the bot from the authorized chat. Messages without a leading `/` go to Claude Code. Prefix with `/codex` or `/kiro` to use another agent:
 
 ```text
-/claude explique o estado deste projeto
+explique o estado deste projeto
 /codex encontre e corrija o bug no parser
 /kiro revise a documentação
 ```
+
+### Continue an existing Claude session
+
+By default each message starts a new Claude conversation that knows where other session transcripts live (`~/.claude/projects`). To continue a real session, for example the one running your experiment:
+
+```text
+/sessions       list the 10 most recent interactive sessions
+/use 2          make session 2 active; later messages resume it with full context
+/use new        go back to a fresh conversation (also: /new)
+```
+
+The active session is saved in `~/.config/telegram-exec-notifier/state.json` and survives service restarts. Sessions started by the bot itself are not listed. If the same session is open in a terminal, the bot's replies continue it separately from what you type there.
 
 The bot confirms when the task starts and sends the final output when it finishes. Each run has a five-minute limit, and long responses are truncated to fit Telegram. Send `/help` to see the available commands. Messages from other chats are ignored.
 
