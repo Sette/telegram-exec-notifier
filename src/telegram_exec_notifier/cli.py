@@ -26,3 +26,7 @@ def main() -> None:
         )
     else:
         asyncio.run(notifier.send(message))
+
+
+if __name__ == "__main__":
+    main()
