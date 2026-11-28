@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/Sette/telegram-exec-notifier/compare/v0.2.0...v0.2.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **cli:** 🐛 run main when the module is executed with python -m ([b6400ee](https://github.com/Sette/telegram-exec-notifier/commit/b6400ee9a401e7fb3eca585044df996b143c8577))
+* **cli:** 🐛 run main when the module is executed with python -m ([456cd7e](https://github.com/Sette/telegram-exec-notifier/commit/456cd7ebba6dd340549e4e03e4f0e4c76f55a6b6))
+
 ## [0.2.0](https://github.com/Sette/telegram-exec-notifier/compare/v0.1.0...v0.2.0) (2026-11-28)
 
 
