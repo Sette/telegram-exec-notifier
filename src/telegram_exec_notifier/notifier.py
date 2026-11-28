@@ -13,9 +13,7 @@ class TelegramNotifier:
     """Send messages to the local notifier service."""
 
     def __init__(self, service_url: str | None = None) -> None:
-        self.service_url = (
-            service_url or os.getenv("TELEGRAM_NOTIFIER_URL", "http://127.0.0.1:8765")
-        ).rstrip("/")
+        self.service_url = (service_url or os.getenv("TELEGRAM_NOTIFIER_URL", "http://127.0.0.1:8765")).rstrip("/")
 
     async def send(self, message: str) -> None:
         """Send a plain text notification via the local service."""
@@ -36,9 +34,7 @@ class TelegramNotifier:
         except (HTTPError, URLError) as exc:
             raise RuntimeError(f"Could not send notification: {exc}") from exc
 
-    async def execution_finished(
-        self, tool: str, summary: str, *, success: bool = True
-    ) -> None:
+    async def execution_finished(self, tool: str, summary: str, *, success: bool = True) -> None:
         """Send a consistently formatted execution result."""
         status = "✅ concluída" if success else "❌ falhou"
         await self.send(f"{tool}: execução {status}\n\n{summary}")
