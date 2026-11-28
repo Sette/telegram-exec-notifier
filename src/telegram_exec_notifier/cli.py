@@ -21,9 +21,7 @@ def main() -> None:
 
     notifier = TelegramNotifier()
     if args.tool:
-        asyncio.run(
-            notifier.execution_finished(args.tool, message, success=not args.failed)
-        )
+        asyncio.run(notifier.execution_finished(args.tool, message, success=not args.failed))
     else:
         asyncio.run(notifier.send(message))
 

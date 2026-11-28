@@ -34,7 +34,7 @@ notify-telegram = "telegram_exec_notifier.cli:main"
 telegram-exec-notifier = "telegram_exec_notifier.server:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "pylint>=3.3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -49,3 +49,24 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.pylint.main]
+init-hook = "import sys; sys.path.append('src')"
+recursive = true
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.design]
+max-args = 8
+max-positional-arguments = 8
+max-locals = 25
+max-statements = 60
+min-public-methods = 0
+
+[tool.pylint."messages control"]
+disable = [
+    "C0114",  # missing-module-docstring: module docstrings are kept where useful
+    "C0116",  # missing-function-docstring: small private helpers do not need one
+    "W0718",  # broad-exception-caught: the service must survive Telegram/CLI failures
+]

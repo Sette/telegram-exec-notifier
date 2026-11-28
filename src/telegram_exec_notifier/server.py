@@ -122,7 +122,7 @@ def _edit_message(message_id: int, text: str) -> None:
             {"chat_id": os.environ["TELEGRAM_CHAT_ID"], "message_id": message_id, "text": text[:4096]},
         )
     except Exception:
-        return
+        log.warning("telegram edit failed")
 
 
 def _handle_callback(callback: dict, allowed_chat: str) -> None:
@@ -183,7 +183,10 @@ def send_telegram(text: str, chat_id: str | int | None = None) -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:
+    """HTTP endpoints: /notify (plain text) and /permission (tool approval)."""
+
+    def do_POST(self) -> None:  # pylint: disable=invalid-name
+        """Route POST requests (method name is fixed by http.server)."""
         if self.path == "/permission":
             self._permission()
             return
@@ -325,7 +328,6 @@ def _format_sessions(sessions: list[dict], active_id: str | None) -> str:
 
 
 def _handle_use(arg: str, chat_id: int) -> None:
-    global _last_listing
     arg = arg.strip().lower()
     if arg in {"new", "nova", "0"}:
         with _state_lock:
@@ -362,10 +364,18 @@ def _claude_command(prompt: str, state: dict) -> tuple[list[str], str | None]:
         }
     }
     command = [
-        "claude", "-p", prompt, "--add-dir", str(Path.home()),
-        "--output-format", "stream-json", "--verbose",
-        "--mcp-config", json.dumps(mcp_config),
-        "--permission-prompt-tool", PERMISSION_TOOL,
+        "claude",
+        "-p",
+        prompt,
+        "--add-dir",
+        str(Path.home()),
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--mcp-config",
+        json.dumps(mcp_config),
+        "--permission-prompt-tool",
+        PERMISSION_TOOL,
     ]
     if state.get("id"):
         return command + ["--resume", state["id"]], state.get("cwd")
@@ -405,18 +415,21 @@ def _reader(stream, events: queue.Queue) -> None:
     events.put(None)
 
 
-def _stream_claude(
-    command: list[str], cwd: str | None, chat_id: int, state: dict, release
-) -> None:
+def _stream_claude(command: list[str], cwd: str | None, chat_id: int, state: dict, release) -> None:  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
     """Run `claude -p` and relay each assistant message as it appears, with heartbeats."""
     label = f"claude [{state['title']}]" if state.get("id") else "claude"
     started = time.monotonic()
     log.info("start %s cwd=%s", label, cwd)
     stderr_file = tempfile.TemporaryFile(mode="w+", errors="replace")
     try:
-        proc = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=stderr_file, stdin=subprocess.DEVNULL,
-            env=child_env(), text=True, cwd=cwd,
+        proc = subprocess.Popen(  # pylint: disable=consider-using-with
+            command,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+            stdin=subprocess.DEVNULL,
+            env=child_env(),
+            text=True,
+            cwd=cwd,
         )
     except Exception as exc:
         send_telegram(f"❌ falha ao iniciar {label}: {exc}", chat_id)
@@ -518,13 +531,12 @@ def _execute_cli(
             "--skip-git-repo-check",
             prompt,
         ],
-        "kiro": [
-            "kiro-cli", "chat", "--no-interactive", "--trust-tools=fs_read,fs_write", prompt
-        ],
+        "kiro": ["kiro-cli", "chat", "--no-interactive", "--trust-tools=fs_read,fs_write", prompt],
     }
     try:
         proc = subprocess.run(
             commands[tool],
+            check=False,
             capture_output=True,
             env=child_env(),
             stdin=subprocess.DEVNULL,
@@ -554,7 +566,7 @@ def _execute_cli(
         send_markdown(f"**{label}** {status}\n\n{output}", chat_id)
     except Exception:
         # Telegram outages must not terminate the polling service.
-        return
+        log.warning("telegram send failed")
 
 
 HELP_TEXT = (
@@ -567,7 +579,7 @@ HELP_TEXT = (
 )
 
 
-def _poll_commands() -> None:
+def _poll_commands() -> None:  # pylint: disable=too-many-branches
     allowed_chat = str(os.environ["TELEGRAM_CHAT_ID"])
     offset = 0
     while True:
@@ -599,8 +611,7 @@ def _poll_commands() -> None:
                 if tool in {"start", "help"}:
                     send_telegram(HELP_TEXT, chat["id"])
                 elif tool == "sessions":
-                    global _last_listing
-                    _last_listing = _list_sessions()
+                    _last_listing[:] = _list_sessions()
                     with _state_lock:
                         active = _load_state().get("id")
                     send_telegram(_format_sessions(_last_listing, active), chat["id"])

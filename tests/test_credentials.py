@@ -4,7 +4,7 @@ from telegram_exec_notifier import credentials
 
 
 def test_parse_handles_comments_quotes_and_blank_lines():
-    text = "# c\n\nTELEGRAM_BOT_TOKEN=\"tok\"\nTELEGRAM_CHAT_ID=42\nBAD LINE\n"
+    text = '# c\n\nTELEGRAM_BOT_TOKEN="tok"\nTELEGRAM_CHAT_ID=42\nBAD LINE\n'
     assert credentials._parse(text) == {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "42"}
 
 
